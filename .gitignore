@@ -1,2 +1,8 @@
 __pycache__
 .idea
+build
+dist
+setup.iss
+BiliMusic.spec
+*.exe
+script.txt

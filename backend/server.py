@@ -1,5 +1,7 @@
 import urllib3
 import requests
+import os
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -8,6 +10,7 @@ from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+# 保持原来的相对导入不变
 from . import api as bili_api
 from . import store
 
@@ -15,6 +18,28 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
 
+# --- 核心修复：资源路径处理逻辑 ---
+def get_resource_path(relative_path):
+    """
+    获取资源文件的绝对路径。
+    兼容开发环境和 PyInstaller 打包环境。
+    """
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller 打包后，web 文件夹会被解压到 sys._MEIPASS/web
+        return os.path.join(sys._MEIPASS, relative_path)
+    
+    # 开发环境，假设 web 文件夹在项目根目录（即 backend 的上一级）
+    # 或者直接使用相对路径，取决于你运行 main.py 的位置
+    return os.path.join(os.path.abspath("."), relative_path)
+
+# 获取 web 文件夹的真实路径
+web_path = get_resource_path("web")
+
+# 检查路径是否存在，方便调试
+if not os.path.exists(web_path):
+    print(f"Warning: Web directory not found at {web_path}")
+
+# --- 这里的修改结束 ---
 
 class PlaylistCreate(BaseModel):
     name: str
@@ -109,6 +134,7 @@ def stream_audio(request: Request, url: str = Query(...)):
     if range_header:
         headers["Range"] = range_header
 
+    # 注意：verify=False 可能有安全风险，但在代理流媒体时有时是必要的
     resp = requests.get(url, headers=headers, stream=True, verify=False)
 
     def iter_stream():
@@ -136,8 +162,11 @@ def stream_audio(request: Request, url: str = Query(...)):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    index_path = Path("web") / "index.html"
-    return index_path.read_text(encoding="utf-8")
+    # --- 修复：使用动态计算的 web_path ---
+    index_file = os.path.join(web_path, "index.html")
+    with open(index_file, "r", encoding="utf-8") as f:
+        return f.read()
 
 
-app.mount("/static", StaticFiles(directory="web"), name="static")
+# --- 修复：使用动态计算的 web_path ---
+app.mount("/static", StaticFiles(directory=web_path), name="static")
