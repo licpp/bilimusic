@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BiliMusic</title>
+    <!-- HTTP Client -->
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
+    <link rel="stylesheet" href="/static/css/app.css">
+
+    <!-- Vue & Element Plus -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/element-plus"></script>
+    <script src="https://unpkg.com/@element-plus/icons-vue"></script>
+</head>
+
+<body>
+    <div id="app" v-cloak>
+        <div class="main-container">
+            <!-- Sidebar -->
+            <div class="sidebar">
+                <div class="brand">
+                    <el-icon>
+                        <Headset />
+                    </el-icon> BiliMusic
+                </div>
+
+                <div class="nav-menu">
+                    <div class="nav-item" :class="{ active: currentView === 'search' }" @click="goSearch">
+                        <el-icon>
+                            <Search />
+                        </el-icon> Search
+                    </div>
+
+                    <div class="playlist-section-header">
+                        <span>Playlists</span>
+                        <el-button link type="primary" size="small" @click.stop="createPlaylist">
+                            <el-icon>
+                                <Plus />
+                            </el-icon>
+                        </el-button>
+                    </div>
+
+                    <div v-for="p in playlists" :key="p.id" class="nav-item"
+                        :class="{ active: activePlaylistId === p.id }" @click="goPlaylist(p.id)">
+                        <div class="playlist-cover" v-if="p.songs && p.songs.length">
+                            <img :src="p.songs[p.songs.length - 1].cover" alt="" class="playlist-cover-img">
+                        </div>
+                        <el-icon v-else>
+                            <List />
+                        </el-icon>
+                        <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ p.name
+                            }}</span>
+                        <el-button link type="danger" size="small"
+                            v-if="activePlaylistId === p.id && !isFavoritePlaylist(p)"
+                            @click.stop="deletePlaylist(p.id)">
+                            <el-icon>
+                                <Delete />
+                            </el-icon>
+                        </el-button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Content Area -->
+            <div class="content-area">
+                <!-- Search View -->
+                <div v-if="currentView === 'search'">
+                    <div class="search-bar-container">
+                        <el-input v-model="searchKeyword" placeholder="Search Bilibili Videos..."
+                            @keyup.enter="doSearch" size="large">
+                            <template #append>
+                                <el-button @click="doSearch" :loading="searchLoading">
+                                    <el-icon>
+                                        <Search />
+                                    </el-icon>
+                                </el-button>
+                            </template>
+                        </el-input>
+                    </div>
+
+                    <div class="video-grid" v-loading="searchLoading">
+                        <div v-for="item in searchResults" :key="item.bvid" class="video-card"
+                            @dblclick="quickPlay(item.bvid)">
+                            <div class="video-thumb-wrapper">
+                                <img :src="item.pic" class="video-thumb" loading="lazy">
+                                <div class="video-overlay">
+                                    <el-button circle type="primary" @click.stop="quickPlay(item.bvid)">
+                                        <el-icon><Caret-Right /></el-icon>
+                                    </el-button>
+                                    <el-button circle type="success" @click.stop="openVideoDetails(item.bvid)">
+                                        <el-icon>
+                                            <Plus />
+                                        </el-icon>
+                                    </el-button>
+                                    <el-button circle :type="isFavoriteBvid(item.bvid) ? 'danger' : 'default'"
+                                        @click.stop="toggleFavoriteFromSearch(item)">
+                                        ♥
+                                    </el-button>
+                                </div>
+                            </div>
+                            <div class="video-info">
+                                <div class="video-title" :title="item.title">{{ item.title }}</div>
+                                <div class="video-author">{{ item.author }} · {{ item.duration }}</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <el-empty v-if="!searchLoading && searchResults.length === 0"
+                        description="Search for music videos"></el-empty>
+
+                    <div v-if="!searchLoading && searchResults.length > 0" class="pagination-bar">
+                        <el-button size="small" @click="prevSearchPage" :disabled="searchPage <= 1">
+                            Prev
+                        </el-button>
+                        <span style="margin: 0 12px;">Page {{ searchPage }}</span>
+                        <el-button size="small" @click="nextSearchPage" :disabled="!searchHasMore">
+                            Next
+                        </el-button>
+                    </div>
+                </div>
+
+                <!-- Playlist View -->
+                <div v-if="currentView === 'playlist' && activePlaylist">
+                    <div style="margin-bottom: 20px;">
+                        <h2 style="margin:0;">{{ activePlaylist.name }}</h2>
+                        <span style="color: var(--text-secondary);">{{ activePlaylist.songs.length }} songs</span>
+                    </div>
+
+                    <ul class="song-list">
+                        <li v-for="(song, index) in activePlaylist.songs" :key="song.uuid" class="song-item"
+                            :class="{ active: playerState.currentSong && playerState.currentSong.uuid === song.uuid }"
+                            @dblclick="playSongInPlaylist(index)">
+                            <div class="song-index">
+                                <span
+                                    v-if="playerState.currentSong && playerState.currentSong.uuid === song.uuid && playerState.isPlaying">
+                                    <el-icon class="is-loading">
+                                        <Loading />
+                                    </el-icon>
+                                </span>
+                                <span v-else>{{ index + 1 }}</span>
+                            </div>
+                            <img v-if="song.cover" :src="song.cover" alt="" class="song-cover">
+                            <div class="song-info-main">
+                                <div class="song-title">{{ song.title }}</div>
+                                <div class="song-artist">{{ song.artist }}</div>
+                            </div>
+                            <div class="song-duration">{{ song.duration }}</div>
+                            <div class="song-actions">
+                                <el-button circle text type="danger" @click.stop="removeSong(song.uuid)">
+                                    <el-icon>
+                                        <Delete />
+                                    </el-icon>
+                                </el-button>
+                            </div>
+                        </li>
+                    </ul>
+
+                    <el-empty v-if="activePlaylist.songs.length === 0"
+                        description="No songs in this playlist"></el-empty>
+                </div>
+            </div>
+        </div>
+
+        <!-- Player Bar -->
+        <div class="player-bar">
+            <div class="player-info">
+                <img v-if="playerState.currentSong" :src="playerState.currentSong.cover" class="player-cover">
+                <div v-else class="player-cover"></div>
+
+                <div class="player-meta" v-if="playerState.currentSong">
+                    <div class="player-title" :title="playerState.currentSong.title">{{ playerState.currentSong.title }}
+                    </div>
+                    <div class="player-artist">{{ playerState.currentSong.artist }}</div>
+                </div>
+            </div>
+
+            <div class="player-controls">
+                <div class="control-buttons">
+                    <button class="control-btn" @click="toggleMode" :title="playerState.mode">
+                        <el-icon v-if="playerState.mode === 'sequence'">
+                            <Sort />
+                        </el-icon>
+                        <el-icon v-if="playerState.mode === 'loop'" style="color: var(--primary-color)">
+                            <Refresh />
+                        </el-icon>
+                        <el-icon v-if="playerState.mode === 'random'" style="color: var(--primary-color)">
+                            <Switch />
+                        </el-icon>
+                    </button>
+                    <button class="control-btn" @click="toggleFavoriteCurrent"
+                        :disabled="!playerState.currentSong"
+                        :style="{ color: isCurrentFavorite ? '#f56c6c' : 'var(--text-primary)' }">
+                        ♥
+                    </button>
+                    <button class="control-btn" @click="prev">
+                        <el-icon><Arrow-Left-Bold /></el-icon>
+                    </button>
+                    <button class="control-btn main" @click="togglePlay">
+                        <el-icon v-if="playerState.isPlaying"><Video-Pause /></el-icon>
+                        <el-icon v-else><Video-Play /></el-icon>
+                    </button>
+                    <button class="control-btn" @click="next">
+                        <el-icon><Arrow-Right-Bold /></el-icon>
+                    </button>
+                </div>
+                <div class="progress-container">
+                    <span>{{ formatTime(playerState.currentTime) }}</span>
+                    <el-slider v-model="playerState.currentTime" :max="playerState.duration" :show-tooltip="false"
+                        @input="seek" class="progress-slider" size="small"></el-slider>
+                    <span>{{ formatTime(playerState.duration) }}</span>
+                </div>
+            </div>
+
+            <div class="player-volume">
+                <el-icon>
+                    <Microphone />
+                </el-icon>
+                <el-slider v-model="playerState.volume" :min="0" :max="1" :step="0.01" @input="setVolume"
+                    class="volume-slider" size="small"></el-slider>
+                <el-button circle text @click="openQueue" :disabled="!playerState.playlist.length">
+                    <el-icon>
+                        <List />
+                    </el-icon>
+                </el-button>
+            </div>
+        </div>
+
+        <!-- Video Details Modal -->
+        <el-dialog v-model="videoDetailsVisible" :title="currentVideoDetails?.title" width="60%">
+            <div v-if="currentVideoDetails">
+                <div style="margin-bottom: 15px;">
+                    <el-checkbox-group v-model="selectedPages">
+                        <div v-for="page in currentVideoDetails.pages" :key="page.cid" style="margin-bottom: 5px;">
+                            <el-checkbox :label="page.cid">
+                                P{{ page.page }} - {{ page.part }} ({{ formatTime(page.duration) }})
+                            </el-checkbox>
+                        </div>
+                    </el-checkbox-group>
+                </div>
+            </div>
+            <template #footer>
+                <span class="dialog-footer">
+                    <el-button @click="videoDetailsVisible = false">Cancel</el-button>
+                    <el-button type="primary" @click="handleAddSelected">Add to Playlist</el-button>
+                </span>
+            </template>
+        </el-dialog>
+
+        <!-- Playlist Selection Modal -->
+        <el-dialog v-model="playlistSelectionVisible" title="Select Playlist" width="30%">
+            <div class="nav-menu">
+                <div v-for="p in playlists" :key="p.id" class="nav-item" @click="confirmAddToPlaylist(p.id)">
+                    <el-icon>
+                        <List />
+                    </el-icon>
+                    <span>{{ p.name }}</span>
+                    <span style="margin-left: auto; font-size: 12px; color: #666;">{{ p.songs.length }}</span>
+                </div>
+            </div>
+        </el-dialog>
+
+        <!-- Play Queue Modal -->
+        <el-dialog v-model="queueVisible" title="当前播放列表" width="40%">
+            <div v-if="!playerState.playlist.length">
+                <el-empty description="暂无播放队列"></el-empty>
+            </div>
+            <div v-else>
+                <ul class="song-list queue-list">
+                    <li v-for="(song, index) in playerState.playlist"
+                        :key="song.uuid || (song.bvid + '-' + song.cid)" class="song-item"
+                        :class="{ active: playerState.currentSong && playerState.currentSong.uuid === song.uuid }"
+                        @dblclick="playFromQueue(index)">
+                        <div class="song-index">
+                            <span
+                                v-if="playerState.currentSong && playerState.currentSong.uuid === song.uuid && playerState.isPlaying">
+                                <el-icon class="is-loading">
+                                    <Loading />
+                                </el-icon>
+                            </span>
+                            <span v-else>{{ index + 1 }}</span>
+                        </div>
+                        <img v-if="song.cover" :src="song.cover" alt="" class="song-cover">
+                        <div class="song-info-main">
+                            <div class="song-title">{{ song.title }}</div>
+                            <div class="song-artist">{{ song.artist }}</div>
+                        </div>
+                        <div class="song-duration">{{ song.duration }}</div>
+                    </li>
+                </ul>
+            </div>
+        </el-dialog>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+
+</html>
