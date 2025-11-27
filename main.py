@@ -3,6 +3,7 @@ import sys
 import threading
 import time
 import ctypes
+import socket
 
 import uvicorn
 import webview
@@ -27,6 +28,21 @@ def start_server():
     # 启动 FastAPI 服务
     # host 设置为 127.0.0.1 仅供本地访问
     uvicorn.run(app, host="127.0.0.1", port=8001, log_level="error")
+
+def wait_for_server(host: str = "127.0.0.1", port: int = 8001, timeout: float = 15.0, interval: float = 0.2) -> bool:
+    """简单轮询端口，判断后端是否已经启动。
+
+    返回 True 表示在超时时间内端口已经打开，可以访问；
+    返回 False 表示超时仍未连通，会继续创建窗口，但前端可能仍需等待。
+    """
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            with socket.create_connection((host, port), timeout=1.0):
+                return True
+        except OSError:
+            time.sleep(interval)
+    return False
 
 def set_app_user_model_id():
     """
@@ -61,8 +77,11 @@ if __name__ == "__main__":
     server_thread = threading.Thread(target=start_server, daemon=True)
     server_thread.start()
 
-    # 等待一秒确保服务器已准备好
-    time.sleep(1)
+    # 轮询本地 8001 端口，确保 FastAPI 已经启动，避免先出现空白窗口
+    server_ready = wait_for_server()
+    if not server_ready:
+        # 如果在超时时间内仍未就绪，继续启动窗口，但前端可能仍然需要等待
+        print("Warning: backend server on 127.0.0.1:8001 not ready within timeout.")
 
     # 4. 获取图标路径 (用于窗口标题栏)
     # 这里的路径 "img/logo.ico" 对应你打包命令中的 --add-data "img;img"

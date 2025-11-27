@@ -19,7 +19,7 @@ BiliMusic 是一个轻量级的桌面端音乐播放器应用。它允许你搜�
 
 ## 🚀 安装与运行
 
-你可以在[这里](https://github.com/licpp/bilimusic/releases/tag/music-player)获取windows安装包。
+你可以在[这里](https://github.com/licpp/bilimusic/releases)获取windows安装包。
 
 ## 📝 注意事项
 
