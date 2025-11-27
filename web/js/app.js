@@ -126,6 +126,7 @@ class MusicPlayer {
 }
 
 const player = new MusicPlayer(playerState);
+let qrTimer = null;
 
 // --- Vue App ---
 const App = {
@@ -142,6 +143,28 @@ const App = {
         const activePlaylist = computed(() => playlists.value.find(p => p.id === activePlaylistId.value));
         const favoritePlaylist = computed(() => playlists.value.find(p => p.id === 'favorite' || p.name === 'My Favorite'));
 
+        const loginInfo = ref({ logged_in: false, dedeuserid: null, user: null });
+        const isLoggedIn = computed(() => !!loginInfo.value.logged_in);
+        const userInfo = computed(() => loginInfo.value.user || null);
+
+        const loginDialogVisible = ref(false);
+        const qrSessionId = ref(null);
+        const qrImage = ref('');
+        const qrStatusText = ref('');
+        const qrLoading = ref(false);
+
+        const smsSessionId = ref(null);
+        const smsPhone = ref('');
+        const smsCode = ref('');
+        const smsSecureCode = ref('');
+        const smsStep = ref('idle'); // idle, geetest, code, secure
+        const smsGeetestUrl = ref('');
+        const smsSecureGeetestUrl = ref('');
+        const smsLoading = ref(false);
+        const smsStatusText = ref('');
+
+        const userDialogVisible = ref(false);
+
         // Modal Data
         const videoDetailsVisible = ref(false);
         const currentVideoDetails = ref(null);
@@ -150,6 +173,7 @@ const App = {
         // Initialization
         const init = async () => {
             await refreshPlaylists();
+            await refreshLoginStatus();
         };
 
         const refreshPlaylists = async () => {
@@ -471,8 +495,234 @@ const App = {
             return `${m}:${s.toString().padStart(2, '0')}`;
         };
 
+        const refreshLoginStatus = async () => {
+            try {
+                const resp = await axios.get('/api/login/info');
+                loginInfo.value = resp.data || { logged_in: false };
+            } catch (e) {
+                loginInfo.value = { logged_in: false };
+            }
+        };
+
+        const startQrLogin = async () => {
+            qrLoading.value = true;
+            qrStatusText.value = '正在生成二维码...';
+            try {
+                const resp = await axios.post('/api/login/qrcode/start');
+                qrSessionId.value = resp.data.session_id;
+                qrImage.value = resp.data.qrcode_image;
+                qrStatusText.value = '请使用 Bilibili 手机 App 扫码登录';
+                if (qrTimer) {
+                    clearInterval(qrTimer);
+                    qrTimer = null;
+                }
+                qrTimer = setInterval(async () => {
+                    if (!qrSessionId.value) return;
+                    try {
+                        const r = await axios.get('/api/login/qrcode/status', {
+                            params: { session_id: qrSessionId.value },
+                        });
+                        const status = r.data.status;
+                        if (status === 'scan') {
+                            qrStatusText.value = '已扫描，请在手机上确认登录';
+                        } else if (status === 'confirm') {
+                            qrStatusText.value = '请在手机上确认登录';
+                        } else if (status === 'timeout') {
+                            qrStatusText.value = '二维码已过期，请点击按钮重新获取';
+                            clearInterval(qrTimer);
+                            qrTimer = null;
+                        } else if (status === 'done') {
+                            qrStatusText.value = '登录成功';
+                            clearInterval(qrTimer);
+                            qrTimer = null;
+                            ElMessage.success('登录成功');
+                            await refreshLoginStatus();
+                            loginDialogVisible.value = false;
+                        }
+                    } catch (e) {
+                        // ignore single poll error
+                    }
+                }, 1500);
+            } catch (e) {
+                qrStatusText.value = '生成二维码失败';
+                ElMessage.error('生成二维码失败');
+            } finally {
+                qrLoading.value = false;
+            }
+        };
+
+        const openLoginDialog = async () => {
+            loginDialogVisible.value = true;
+            qrImage.value = '';
+            qrStatusText.value = '';
+            smsSessionId.value = null;
+            smsPhone.value = '';
+            smsCode.value = '';
+            smsSecureCode.value = '';
+            smsStep.value = 'idle';
+            smsGeetestUrl.value = '';
+            smsSecureGeetestUrl.value = '';
+            smsStatusText.value = '';
+            await startQrLogin();
+        };
+
+        const openUserDialog = () => {
+            if (!loginInfo.value.logged_in) {
+                openLoginDialog();
+                return;
+            }
+            userDialogVisible.value = true;
+        };
+
+        const startSmsLogin = async () => {
+            if (!smsPhone.value) {
+                ElMessage.warning('请输入手机号');
+                return;
+            }
+            smsLoading.value = true;
+            smsStatusText.value = '';
+            try {
+                const resp = await axios.post('/api/login/sms/geetest/start');
+                smsSessionId.value = resp.data.session_id;
+                smsGeetestUrl.value = resp.data.geetest_url;
+                smsStep.value = 'geetest';
+                try {
+                    window.open(smsGeetestUrl.value, '_blank');
+                } catch (e) {
+                    // ignore
+                }
+                smsStatusText.value = '请在新打开的页面完成验证码';
+            } catch (e) {
+                ElMessage.error('获取验证码失败');
+            } finally {
+                smsLoading.value = false;
+            }
+        };
+
+        const logout = async () => {
+            try {
+                await axios.post('/api/logout');
+                loginInfo.value = { logged_in: false, dedeuserid: null, user: null };
+                userDialogVisible.value = false;
+                ElMessage.success('已退出登录');
+            } catch (e) {
+                ElMessage.error('退出登录失败');
+            }
+        };
+
+        const sendSmsCode = async () => {
+            if (!smsSessionId.value) return;
+            if (!smsPhone.value) {
+                ElMessage.warning('请输入手机号');
+                return;
+            }
+            smsLoading.value = true;
+            try {
+                const resp = await axios.post('/api/login/sms/send_code', {
+                    session_id: smsSessionId.value,
+                    phone: smsPhone.value,
+                });
+                if (resp.data.status === 'sms_sent') {
+                    smsStep.value = 'code';
+                    smsStatusText.value = '验证码已发送，请查收短信';
+                } else {
+                    smsStatusText.value = '发送验证码失败';
+                }
+            } catch (e) {
+                ElMessage.error('发送验证码失败');
+            } finally {
+                smsLoading.value = false;
+            }
+        };
+
+        const checkSmsGeetest = async () => {
+            if (!smsSessionId.value) return;
+            smsLoading.value = true;
+            try {
+                const resp = await axios.get('/api/login/sms/geetest/status', {
+                    params: { session_id: smsSessionId.value },
+                });
+                if (resp.data.done) {
+                    await sendSmsCode();
+                } else {
+                    smsStatusText.value = '验证码尚未完成，请先完成页面中的验证';
+                }
+            } catch (e) {
+                ElMessage.error('检查验证码状态失败');
+            } finally {
+                smsLoading.value = false;
+            }
+        };
+
+        const submitSmsCode = async () => {
+            if (!smsSessionId.value || !smsCode.value) {
+                ElMessage.warning('请输入短信验证码');
+                return;
+            }
+            smsLoading.value = true;
+            smsStatusText.value = '';
+            try {
+                const resp = await axios.post('/api/login/sms/verify', {
+                    session_id: smsSessionId.value,
+                    code: smsCode.value,
+                });
+                if (resp.data.status === 'done') {
+                    ElMessage.success('登录成功');
+                    await refreshLoginStatus();
+                    loginDialogVisible.value = false;
+                } else if (resp.data.status === 'need_verify') {
+                    smsStep.value = 'secure';
+                    smsSecureGeetestUrl.value = resp.data.geetest_url;
+                    try {
+                        window.open(smsSecureGeetestUrl.value, '_blank');
+                    } catch (e) {
+                        // ignore
+                    }
+                    smsStatusText.value = '需要进行安全验证，请在新页面完成并输入短信验证码';
+                } else {
+                    smsStatusText.value = '登录失败';
+                }
+            } catch (e) {
+                ElMessage.error('登录失败');
+            } finally {
+                smsLoading.value = false;
+            }
+        };
+
+        const submitSmsSecureCode = async () => {
+            if (!smsSessionId.value || !smsSecureCode.value) {
+                ElMessage.warning('请输入安全验证短信验证码');
+                return;
+            }
+            smsLoading.value = true;
+            try {
+                const resp = await axios.post('/api/login/sms/verify_complete', {
+                    session_id: smsSessionId.value,
+                    code: smsSecureCode.value,
+                });
+                if (resp.data.status === 'done') {
+                    ElMessage.success('登录成功');
+                    await refreshLoginStatus();
+                    loginDialogVisible.value = false;
+                } else {
+                    smsStatusText.value = '安全验证失败';
+                }
+            } catch (e) {
+                ElMessage.error('安全验证失败');
+            } finally {
+                smsLoading.value = false;
+            }
+        };
+
         onMounted(() => {
             init();
+        });
+
+        watch(loginDialogVisible, (val) => {
+            if (!val && qrTimer) {
+                clearInterval(qrTimer);
+                qrTimer = null;
+            }
         });
 
         return {
@@ -482,6 +732,10 @@ const App = {
             activePlaylistId,
             activePlaylist,
             favoritePlaylist,
+            loginInfo,
+            isLoggedIn,
+            userInfo,
+            loginDialogVisible,
             searchKeyword,
             searchResults,
             searchLoading,
@@ -493,6 +747,18 @@ const App = {
             selectedPages,
             playlistSelectionVisible,
             queueVisible,
+            qrImage,
+            qrStatusText,
+            qrLoading,
+            smsPhone,
+            smsCode,
+            smsSecureCode,
+            smsStep,
+            smsGeetestUrl,
+            smsSecureGeetestUrl,
+            smsLoading,
+            smsStatusText,
+            userDialogVisible,
 
             // Methods
             goSearch,
@@ -513,6 +779,14 @@ const App = {
             toggleFavoriteFromSearch,
             openQueue,
             playFromQueue,
+            openLoginDialog,
+            openUserDialog,
+            startQrLogin,
+            startSmsLogin,
+            checkSmsGeetest,
+            submitSmsCode,
+            submitSmsSecureCode,
+            logout,
 
             // Player Methods
             togglePlay: () => player.togglePlay(),

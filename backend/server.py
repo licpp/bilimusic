@@ -1,16 +1,22 @@
 import urllib3
 import requests
+import base64
 import os
+import uuid
 import sys
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-# 保持原来的相对导入不变
+from bilibili_api import login_v2
+from bilibili_api.utils.geetest import Geetest, GeetestType
+
 from . import api as bili_api
 from . import store
 
@@ -60,6 +66,35 @@ class SongInfo(BaseModel):
 
 class ReorderSongsRequest(BaseModel):
     song_uuids: List[str]
+
+
+@dataclass
+class SmsLoginSession:
+    geetest: Geetest
+    phone: Optional[login_v2.PhoneNumber] = None
+    captcha_id: Optional[str] = None
+    login_check: Optional[login_v2.LoginCheck] = None
+    verify_geetest: Optional[Geetest] = None
+    done: bool = False
+
+
+qr_sessions: Dict[str, login_v2.QrCodeLogin] = {}
+sms_sessions: Dict[str, SmsLoginSession] = {}
+
+
+class SmsSendCodeRequest(BaseModel):
+    session_id: str
+    phone: str
+
+
+class SmsVerifyCodeRequest(BaseModel):
+    session_id: str
+    code: str
+
+
+class SmsCheckCompleteRequest(BaseModel):
+    session_id: str
+    code: str
 
 
 @app.get("/api/playlists")
@@ -158,6 +193,142 @@ def stream_audio(request: Request, url: str = Query(...)):
         status_code=resp.status_code,
         headers=response_headers,
     )
+
+
+@app.get("/api/login/status")
+def login_status():
+    return bili_api.get_login_status()
+
+
+@app.get("/api/login/info")
+async def login_info():
+    return await bili_api.get_login_info()
+
+
+@app.post("/api/logout")
+def logout():
+    bili_api.logout()
+    return {"success": True}
+
+
+@app.post("/api/login/qrcode/start")
+async def login_qrcode_start():
+    qr = login_v2.QrCodeLogin(platform=login_v2.QrCodeLoginChannel.WEB)
+    await qr.generate_qrcode()
+    picture = qr.get_qrcode_picture()
+    img_b64 = base64.b64encode(picture.content).decode("ascii")
+    session_id = uuid.uuid4().hex
+    qr_sessions[session_id] = qr
+    return {"session_id": session_id, "qrcode_image": f"data:image/png;base64,{img_b64}"}
+
+
+@app.get("/api/login/qrcode/status")
+async def login_qrcode_status(session_id: str = Query(...)):
+    qr = qr_sessions.get(session_id)
+    if not qr:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if qr.has_done():
+        cred = qr.get_credential()
+        bili_api.save_credential_to_file(cred)
+        qr_sessions.pop(session_id, None)
+        return {"status": "done"}
+
+    event = await qr.check_state()
+    if event == login_v2.QrCodeLoginEvents.SCAN:
+        status = "scan"
+    elif event == login_v2.QrCodeLoginEvents.CONF:
+        status = "confirm"
+    elif event == login_v2.QrCodeLoginEvents.TIMEOUT:
+        status = "timeout"
+        qr_sessions.pop(session_id, None)
+    else:
+        status = "unknown"
+    return {"status": status}
+
+
+@app.post("/api/login/sms/geetest/start")
+async def sms_geetest_start():
+    gee = Geetest()
+    await gee.generate_test(GeetestType.LOGIN)
+    gee.start_geetest_server()
+    session_id = uuid.uuid4().hex
+    sms_sessions[session_id] = SmsLoginSession(geetest=gee)
+    return {"session_id": session_id, "geetest_url": gee.get_geetest_server_url()}
+
+
+@app.get("/api/login/sms/geetest/status")
+def sms_geetest_status(session_id: str = Query(...)):
+    session = sms_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"done": session.geetest.has_done()}
+
+
+@app.post("/api/login/sms/send_code")
+async def sms_send_code(body: SmsSendCodeRequest):
+    session = sms_sessions.get(body.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not session.geetest.has_done():
+        raise HTTPException(status_code=400, detail="Geetest not completed")
+
+    phone = login_v2.PhoneNumber(body.phone, "+86")
+    captcha_id = await login_v2.send_sms(phonenumber=phone, geetest=session.geetest)
+    try:
+        session.geetest.close_geetest_server()
+    except Exception:
+        pass
+    session.phone = phone
+    session.captcha_id = captcha_id
+    return {"status": "sms_sent"}
+
+
+@app.post("/api/login/sms/verify")
+async def sms_verify(body: SmsVerifyCodeRequest):
+    session = sms_sessions.get(body.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not session.phone or not session.captcha_id:
+        raise HTTPException(status_code=400, detail="SMS not sent")
+
+    cred_or_check = await login_v2.login_with_sms(
+        phonenumber=session.phone,
+        code=body.code,
+        captcha_id=session.captcha_id,
+    )
+
+    if isinstance(cred_or_check, login_v2.LoginCheck):
+        gee = Geetest()
+        await gee.generate_test(type_=GeetestType.VERIFY)
+        gee.start_geetest_server()
+        session.login_check = cred_or_check
+        session.verify_geetest = gee
+        return {"status": "need_verify", "geetest_url": gee.get_geetest_server_url()}
+
+    cred = cred_or_check
+    bili_api.save_credential_to_file(cred)
+    session.done = True
+    return {"status": "done"}
+
+
+@app.post("/api/login/sms/verify_complete")
+async def sms_verify_complete(body: SmsCheckCompleteRequest):
+    session = sms_sessions.get(body.session_id)
+    if not session or not session.login_check or not session.verify_geetest:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not session.verify_geetest.has_done():
+        raise HTTPException(status_code=400, detail="Geetest not completed")
+
+    await session.login_check.send_sms(session.verify_geetest)
+    try:
+        session.verify_geetest.close_geetest_server()
+    except Exception:
+        pass
+    cred = await session.login_check.complete_check(body.code)
+    bili_api.save_credential_to_file(cred)
+    session.done = True
+    return {"status": "done"}
 
 
 @app.get("/", response_class=HTMLResponse)

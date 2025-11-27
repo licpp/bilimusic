@@ -22,6 +22,21 @@
 
 <body>
     <div id="app" v-cloak>
+        <div class="topbar">
+            <div v-if="!loginInfo.logged_in" class="user-entry" @click="openLoginDialog">
+                <el-icon class="user-entry-icon">
+                    <User />
+                </el-icon>
+                <span class="user-entry-text">登录</span>
+            </div>
+            <div v-else class="user-entry" @click="openUserDialog">
+                <img v-if="loginInfo.user && loginInfo.user.face" :src="loginInfo.user.face" class="user-avatar">
+                <el-icon v-else class="user-entry-icon">
+                    <User />
+                </el-icon>
+                <span class="user-entry-text">{{ loginInfo.user?.name || '已登录' }}</span>
+            </div>
+        </div>
         <div class="main-container">
             <!-- Sidebar -->
             <div class="sidebar">
@@ -266,6 +281,31 @@
             </div>
         </el-dialog>
 
+        <!-- User Info Modal -->
+        <el-dialog v-model="userDialogVisible" title="账号信息" width="360px">
+            <div class="user-profile" v-if="loginInfo && loginInfo.logged_in">
+                <img v-if="loginInfo.user && loginInfo.user.face" :src="loginInfo.user.face" class="user-avatar-large">
+                <div class="user-profile-main">
+                    <div class="user-name">
+                        {{ loginInfo.user?.name || 'Bilibili 用户' }}
+                        <span v-if="loginInfo.user && loginInfo.user.vip_label" class="user-vip-label">
+                            {{ loginInfo.user.vip_label }}
+                        </span>
+                    </div>
+                    <div class="user-id">UID: {{ loginInfo.user?.mid || loginInfo.dedeuserid }}</div>
+                    <div class="user-meta-line" v-if="loginInfo.user">
+                        性别：{{ loginInfo.user.sex || '未知' }} · 等级：LV{{ loginInfo.user.level || '-' }}
+                    </div>
+                    <div class="user-meta-line" v-if="loginInfo.user && loginInfo.user.sign">
+                        签名：{{ loginInfo.user.sign }}
+                    </div>
+                </div>
+            </div>
+            <div class="user-profile-actions">
+                <el-button type="danger" @click="logout">退出登录</el-button>
+            </div>
+        </el-dialog>
+
         <!-- Play Queue Modal -->
         <el-dialog v-model="queueVisible" title="当前播放列表" width="40%">
             <div v-if="!playerState.playlist.length">
@@ -294,6 +334,66 @@
                         <div class="song-duration">{{ song.duration }}</div>
                     </li>
                 </ul>
+            </div>
+        </el-dialog>
+
+        <!-- Bilibili Login Modal -->
+        <el-dialog v-model="loginDialogVisible" title="登录 Bilibili" width="700px">
+            <div class="login-dialog">
+                <div class="login-panel login-panel-left">
+                    <h3 class="login-panel-title">扫码登录</h3>
+                    <p class="login-panel-subtitle">使用 Bilibili 手机 App 扫码登录</p>
+                    <div class="login-qr-wrapper">
+                        <img v-if="qrImage" :src="qrImage" alt="QR Code" class="login-qr-image">
+                        <div v-else class="login-qr-placeholder">点击下方按钮生成二维码</div>
+                    </div>
+                    <div class="login-status-text">{{ qrStatusText }}</div>
+                    <el-button type="primary" size="small" :loading="qrLoading" @click="startQrLogin">
+                        重新获取二维码
+                    </el-button>
+                </div>
+
+                <div class="login-panel login-panel-right">
+                    <h3 class="login-panel-title">短信验证码登录</h3>
+                    <p class="login-panel-subtitle">通过手机号 + 验证码登录账号</p>
+                    <el-input v-model="smsPhone" placeholder="手机号" maxlength="20" class="login-input-margin"></el-input>
+
+                    <template v-if="smsStep === 'idle'">
+                        <el-button type="primary" size="small" @click="startSmsLogin" :loading="smsLoading">
+                            获取验证码
+                        </el-button>
+                    </template>
+
+                    <template v-if="smsStep === 'geetest'">
+                        <div class="login-status-text">
+                            已打开验证页面，如未自动打开请手动访问：<br>
+                            <span class="login-link">{{ smsGeetestUrl }}</span>
+                        </div>
+                        <el-button type="primary" size="small" @click="checkSmsGeetest" :loading="smsLoading">
+                            我已完成验证码
+                        </el-button>
+                    </template>
+
+                    <template v-if="smsStep === 'code'">
+                        <el-input v-model="smsCode" placeholder="短信验证码" maxlength="10" class="login-input-margin"></el-input>
+                        <el-button type="primary" size="small" @click="submitSmsCode" :loading="smsLoading">
+                            登录
+                        </el-button>
+                    </template>
+
+                    <template v-if="smsStep === 'secure'">
+                        <div class="login-status-text">
+                            已打开安全验证页面，如未自动打开请手动访问：<br>
+                            <span class="login-link">{{ smsSecureGeetestUrl }}</span>
+                        </div>
+                        <el-input v-model="smsSecureCode" placeholder="安全验证短信验证码" maxlength="10" class="login-input-margin"></el-input>
+                        <el-button type="primary" size="small" @click="submitSmsSecureCode" :loading="smsLoading">
+                            完成验证并登录
+                        </el-button>
+                    </template>
+
+                    <div class="login-status-text" v-if="smsStatusText">{{ smsStatusText }}</div>
+                </div>
             </div>
         </el-dialog>
     </div>

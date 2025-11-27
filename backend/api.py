@@ -1,12 +1,105 @@
 import asyncio
-from bilibili_api import search, video, sync, Credential
+import json
+import os
+from bilibili_api import search, video, sync, Credential, user as bili_user
 import httpx
 import base64
+
+CREDENTIAL_FILE = os.path.join("data", "credential.json")
 
 # Initialize Credential (empty for now, or load from env/config if needed)
 # For public videos, empty credential usually works for 360p/480p and basic audio.
 # High quality audio might need SESSDATA.
 credential = Credential()
+
+
+def load_credential_from_file():
+    global credential
+    if not os.path.exists(CREDENTIAL_FILE):
+        return
+    try:
+        with open(CREDENTIAL_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        credential_local = Credential(
+            sessdata=data.get("sessdata", ""),
+            bili_jct=data.get("bili_jct", ""),
+            dedeuserid=data.get("dedeuserid", ""),
+            ac_time_value=data.get("ac_time_value", ""),
+        )
+        credential = credential_local
+    except Exception as e:
+        print(f"Load credential error: {e}")
+
+
+def save_credential_to_file(cred: Credential):
+    global credential
+    credential = cred
+    os.makedirs(os.path.dirname(CREDENTIAL_FILE), exist_ok=True)
+    data = {
+        "sessdata": getattr(cred, "sessdata", ""),
+        "bili_jct": getattr(cred, "bili_jct", ""),
+        "dedeuserid": getattr(cred, "dedeuserid", ""),
+        "ac_time_value": getattr(cred, "ac_time_value", ""),
+    }
+    try:
+        with open(CREDENTIAL_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Save credential error: {e}")
+
+
+def get_login_status():
+    return {
+        "logged_in": bool(getattr(credential, "sessdata", "")),
+        "dedeuserid": getattr(credential, "dedeuserid", None),
+    }
+
+
+async def get_login_info():
+    base = get_login_status()
+    info = None
+    if base["logged_in"] and base.get("dedeuserid"):
+        try:
+            uid = int(base["dedeuserid"])
+            u = bili_user.User(uid=uid, credential=credential)
+            data = await u.get_user_info()
+            face_url = data.get("face")
+            face_data_uri = None
+            if face_url:
+                if face_url.startswith("//"):
+                    face_url = "https:" + face_url
+                face_data_uri = await fetch_image_as_data_uri(face_url)
+
+            vip_data = data.get("vip") or {}
+            level_info = data.get("level_info") or {}
+
+            info = {
+                "mid": data.get("mid"),
+                "name": data.get("name") or data.get("uname"),
+                "face": face_data_uri,
+                "sign": data.get("sign"),
+                "sex": data.get("sex"),
+                "level": level_info.get("current_level") or data.get("level"),
+                "vip_type": vip_data.get("type"),
+                "vip_label": (vip_data.get("label") or {}).get("text"),
+            }
+        except Exception as e:
+            print(f"Get user info error: {e}")
+    base["user"] = info
+    return base
+
+
+def logout():
+    global credential
+    credential = Credential()
+    try:
+        if os.path.exists(CREDENTIAL_FILE):
+            os.remove(CREDENTIAL_FILE)
+    except Exception as e:
+        print(f"Remove credential file error: {e}")
+
+
+load_credential_from_file()
 
 
 async def fetch_image_as_data_uri(url, client=None):
